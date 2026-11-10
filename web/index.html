@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>vr-vice-city — F1 WebXR diagnostic</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #0b0e12; color: #cdd6e0;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    #app { display: grid; grid-template-columns: 1fr 340px; height: 100%; }
+    #stage { position: relative; min-width: 0; }
+    #gl { width: 100%; height: 100%; display: block; background: #05070a; }
+    #overlay { position: absolute; left: 12px; top: 12px; right: 12px;
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .group { display: flex; gap: 4px; background: #11161dcc; padding: 6px;
+      border: 1px solid #1f2733; border-radius: 8px; backdrop-filter: blur(4px); }
+    .group > label { align-self: center; color: #7d8aa0; padding: 0 6px 0 2px; }
+    button { background: #1b2430; color: #cdd6e0; border: 1px solid #2a3647;
+      padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #243040; }
+    button[aria-pressed="true"] { background: #2d6cdf; border-color: #2d6cdf; color: #fff; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    #lock-hint { position: absolute; left: 12px; bottom: 12px; right: 12px;
+      color: #93a1b5; background: #11161dcc; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid #1f2733; }
+    #fatal { position: absolute; inset: 0; display: flex; align-items: center;
+      justify-content: center; color: #ff7676; padding: 24px; text-align: center; }
+    #panel { overflow-y: auto; border-left: 1px solid #1f2733; padding: 10px;
+      background: #0d1116; }
+    .panel-section { margin-bottom: 14px; }
+    .panel-section h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .08em;
+      text-transform: uppercase; color: #6f7d93; }
+    .row { display: flex; justify-content: space-between; gap: 10px;
+      padding: 2px 0; border-bottom: 1px dotted #182028; }
+    .row .k { color: #8a98ad; }
+    .row .v { text-align: right; } .row .v.ok { color: #57d08a; } .row .v.bad { color: #ff7676; }
+    .note { color: #c3cedd; padding: 3px 0; border-left: 2px solid #2d6cdf; padding-left: 8px; margin: 3px 0; }
+    .muted { color: #566072; }
+    header.title { grid-column: 1 / -1; padding: 8px 12px; border-bottom: 1px solid #1f2733;
+      display: flex; justify-content: space-between; background: #0d1116; }
+    header.title b { color: #e7edf5; } header.title span { color: #6f7d93; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header class="title">
+      <b>vr-vice-city · F1 WebXR diagnostic</b>
+      <span>own geometry · no engine, no game data · emulation is not headset validation</span>
+    </header>
+    <div id="stage">
+      <canvas id="gl"></canvas>
+      <div id="overlay">
+        <div class="group">
+          <label>Display</label>
+          <button id="display-desktop" aria-pressed="true">Monitor</button>
+          <button id="display-vr" aria-pressed="false">Enter VR</button>
+        </div>
+        <div class="group">
+          <label>Input</label>
+          <button id="input-km" aria-pressed="true">Keyboard/Mouse</button>
+          <button id="input-vr" aria-pressed="false">VR controllers</button>
+        </div>
+      </div>
+      <div id="lock-hint">Click the view to capture the mouse (relative look).</div>
+      <div id="fatal"></div>
+    </div>
+    <aside id="panel"></aside>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

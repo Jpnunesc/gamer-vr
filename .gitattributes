@@ -1,0 +1,9 @@
+# Normalize line endings to LF in the repo and on checkout. Keeps the shell
+# build scripts runnable in the Linux build container (bash rejects CRLF in
+# `set -euo pipefail`). PowerShell reads LF fine.
+* text=auto eol=lf
+
+*.wasm binary
+*.png binary
+*.ico binary
+*.svg text

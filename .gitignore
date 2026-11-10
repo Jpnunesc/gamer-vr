@@ -1,0 +1,35 @@
+# --- Game data: never commit. Supplied by the user from a classic install. ---
+local-game-data/
+*.img
+*.dir
+*.dff
+*.txd
+*.ipl
+*.ide
+*.dat
+*.set
+*.b   # save slots
+
+# --- External pinned engine checkout (reproduced by scripts/fetch-engine.*) ---
+# Not vendored into our history; fetch it with the pinned script instead.
+engine/
+
+# --- Build artifacts ---
+build/
+dist/
+*.wasm
+*.wasm.map
+web/public/engine/   # emitted engine glue/wasm copied in for serving
+
+# --- Node / tooling ---
+node_modules/
+.cache/
+*.log
+npm-debug.log*
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
