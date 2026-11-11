@@ -1,0 +1,322 @@
+diff --git a/src/gl/gl3device.cpp b/src/gl/gl3device.cpp
+index 2cfa9ec..255c60b 100644
+--- a/src/gl/gl3device.cpp
++++ b/src/gl/gl3device.cpp
+@@ -2,6 +2,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <assert.h>
++#include <math.h>
+ 
+ #include "../rwbase.h"
+ #include "../rwerror.h"
+@@ -1203,9 +1204,53 @@ flushCache(void)
+ 	flushUniforms();
+ }
+ 
++// F2 step 2: side-by-side / XR stereo override (see docs/STEREO-SPIKE.md). When on,
++// beginUpdate shifts the view in RW view-space X by gXrEyeOff (crude horizontal
++// stereo) and targets the gXrVp2 viewport; setFrameBuffer is skipped (the host owns
++// the bound framebuffer) and clearCamera scissors to the eye viewport.
++static bool  gXrStereo = false;
++static float gXrEyeOff = 0.0f;
++static int   gXrVp2[4] = { 0, 0, 0, 0 };
++static float gHeadYaw = 0.0f, gHeadPitch = 0.0f;   // view-space head rotation (radians)
++// F2 obstacle #4: verbatim-matrix mode. When set, the crude eye-offset + aspect
++// hack + head-rotation path is bypassed entirely; the host supplies the real
++// per-eye projection (RW convention) and a view DELTA that is left-multiplied
++// onto the engine's own camera view. See web/src/xr-engine/xr-rw.js for how JS
++// converts the WebXR GL matrices into these. Both are column-major float[16].
++static bool  gXrVerbatim = false;
++static float gXrProjM[16];       // host-supplied RW projection (P_rw = P_gl·M)
++static float gXrViewDelta[16];   // host-supplied view delta (Δ = M·viewInv·M)
++
++// out = a · b, column-major 4x4. out must not alias a or b.
++static void xrMat4Mul(float *o, const float *a, const float *b) {
++	for(int c = 0; c < 4; c++)
++		for(int r = 0; r < 4; r++)
++			o[c*4+r] = a[0*4+r]*b[c*4+0] + a[1*4+r]*b[c*4+1] +
++			           a[2*4+r]*b[c*4+2] + a[3*4+r]*b[c*4+3];
++}
++
++void xrStereoSet(float eyeOff, int x, int y, int w, int h) {
++	gXrStereo = true; gXrVerbatim = false; gXrEyeOff = eyeOff;
++	gXrVp2[0] = x; gXrVp2[1] = y; gXrVp2[2] = w; gXrVp2[3] = h;
++	glGlobals.presentWidth = -1;   // invalidate cached viewport
++}
++// Verbatim real-matrix stereo: proj/view are the converted WebXR matrices.
++void xrStereoSetM(const float *proj, const float *viewDelta, int x, int y, int w, int h) {
++	gXrStereo = true; gXrVerbatim = true;
++	memcpy(gXrProjM, proj, 16*sizeof(float));
++	memcpy(gXrViewDelta, viewDelta, 16*sizeof(float));
++	gXrVp2[0] = x; gXrVp2[1] = y; gXrVp2[2] = w; gXrVp2[3] = h;
++	glGlobals.presentWidth = -1;   // invalidate cached viewport
++}
++void xrStereoOff(void) { gXrStereo = false; gXrVerbatim = false; gHeadYaw = gHeadPitch = 0.0f; glGlobals.presentWidth = -1; }
++// Head look (radians), applied in the override below (crude path only). Set per
++// frame from the WebXR head pose; 0 = straight ahead.
++void xrHeadSet(float yaw, float pitch) { gHeadYaw = yaw; gHeadPitch = pitch; }
++
+ static void
+ setFrameBuffer(Camera *cam)
+ {
++	if(gXrStereo) return;   // the host owns the bound framebuffer under stereo/XR
+ 	Raster *fbuf = cam->frameBuffer->parent;
+ 	Raster *zbuf = cam->zBuffer->parent;
+ 	assert(fbuf);
+@@ -1369,6 +1414,57 @@ beginUpdate(Camera *cam)
+ 	setFrameBuffer(cam);
+ 
+ 	setViewport(cam->frameBuffer);
++
++	if(gXrStereo){
++		if(gXrVerbatim){
++			// Real per-eye matrices (obstacle #4): push the converted WebXR
++			// projection verbatim (correct asymmetric frustum, no aspect hack)
++			// and compose the head/eye delta onto the engine's camera view:
++			// V_final = Δ · V_cam. The delta carries IPD + head rotation + 6DoF
++			// head translation at once. See web/src/xr-engine/xr-rw.js.
++			setProjectionMatrix(gXrProjM);
++			memcpy(&cam->devProj, gXrProjM, sizeof(RawMatrix));
++			float vfinal[16];
++			xrMat4Mul(vfinal, gXrViewDelta, view);
++			memcpy(&cam->devView, vfinal, sizeof(RawMatrix));
++			setViewMatrix(vfinal);
++		}else{
++			// Crude fallback (kept for A/B in the emulator): full-screen game
++			// projection rescaled to the eye viewport + hand-rolled head look and
++			// fixed eye offset. Selected by the host via ?proj=crude.
++			float fullAspect = cam->viewWindow.x / cam->viewWindow.y;
++			float eyeAspect  = (gXrVp2[3] != 0) ? (float)gXrVp2[2] / (float)gXrVp2[3] : fullAspect;
++			if(eyeAspect > 0.0f){
++				float f = fullAspect / eyeAspect;
++				proj[0] *= f;
++				proj[8] *= f;
++				proj[12] = -proj[8];
++				setProjectionMatrix(proj);
++			}
++			// Head look: rotate the view about its own up (yaw) then right (pitch).
++			if(gHeadYaw != 0.0f){
++				float c = cosf(gHeadYaw), s = sinf(gHeadYaw);
++				for(int i = 0; i < 4; i++){
++					float x = view[i*4+0], z = view[i*4+2];
++					view[i*4+0] =  c*x + s*z;
++					view[i*4+2] = -s*x + c*z;
++				}
++			}
++			if(gHeadPitch != 0.0f){
++				float c = cosf(gHeadPitch), s = sinf(gHeadPitch);
++				for(int i = 0; i < 4; i++){
++					float y = view[i*4+1], z = view[i*4+2];
++					view[i*4+1] = c*y - s*z;
++					view[i*4+2] = s*y + c*z;
++				}
++			}
++			view[12] += gXrEyeOff;        // eye separation in the (rotated) view-space X
++			setViewMatrix(view);
++		}
++		glViewport(gXrVp2[0], gXrVp2[1], gXrVp2[2], gXrVp2[3]);
++		glGlobals.presentOffX = gXrVp2[0]; glGlobals.presentOffY = gXrVp2[1];
++		glGlobals.presentWidth = gXrVp2[2]; glGlobals.presentHeight = gXrVp2[3];
++	}
+ }
+ 
+ static void
+@@ -1382,6 +1478,25 @@ clearCamera(Camera *cam, RGBA *col, uint32 mode)
+ 	RGBAf colf;
+ 	GLbitfield mask;
+ 
++	if(gXrStereo){
++		// Scissor the clear to this eye's viewport so clearing one eye never
++		// wipes the other (both eyes share the host-bound framebuffer).
++		glViewport(gXrVp2[0], gXrVp2[1], gXrVp2[2], gXrVp2[3]);
++		glScissor(gXrVp2[0], gXrVp2[1], gXrVp2[2], gXrVp2[3]);
++		glEnable(GL_SCISSOR_TEST);
++		convColor(&colf, col);
++		glClearColor(colf.red, colf.green, colf.blue, colf.alpha);
++		mask = 0;
++		if(mode & Camera::CLEARIMAGE) mask |= GL_COLOR_BUFFER_BIT;
++		if(mode & Camera::CLEARZ) mask |= GL_DEPTH_BUFFER_BIT;
++		if(mode & Camera::CLEARSTENCIL) mask |= GL_STENCIL_BUFFER_BIT;
++		glDepthMask(GL_TRUE);
++		glClear(mask);
++		glDepthMask(rwStateCache.zwrite);
++		glDisable(GL_SCISSOR_TEST);
++		return;
++	}
++
+ 	setFrameBuffer(cam);
+ 
+ 	// make sure we're only clearing the part of the framebuffer
+@@ -2129,6 +2244,171 @@ deviceSystemGLFW(DeviceReq req, void *arg, int32 n)
+ 
+ #endif
+ 
++// ---------------------------------------------------------------------------
++// F2 stereo spike (Experiment #1): self-contained diagnostic renderer.
++// Raw GLES3, deliberately bypassing RW's matrix pipeline: it takes the WebXR
++// projection and view matrices verbatim (column-major, as GL wants them) and
++// draws a 1 m floor grid + reference cubes. A headset/emulator then shows two
++// scissored eye viewports with correct asymmetric projection and parallax —
++// proving loop ownership + opaque-FB access + projection before the real world
++// is wired through librw's beginUpdate. Called from sdl2.cpp's xrRenderView.
++// Residual GL state (program/VAO/depth) is not restored: during XR the desktop
++// path is parked, and librw re-sets state on the next desktop frame.
++// See docs/STEREO-SPIKE.md.
++// ---------------------------------------------------------------------------
++static struct {
++	bool   inited;
++	GLuint prog, uProj, uView, uModel, uColor;
++	GLuint gridVao, gridVbo; int gridVerts;
++	GLuint cubeVao, cubeVbo; int cubeVerts;
++} gXrDiag = { false };
++
++static GLuint
++xrCompile(GLenum type, const char *src)
++{
++	GLuint s = glCreateShader(type);
++	glShaderSource(s, 1, &src, nil);
++	glCompileShader(s);
++	return s;
++}
++
++static void
++xrModelMat(float *m, float tx, float ty, float tz, float s)
++{
++	// column-major translate * uniform-scale
++	m[0]=s; m[1]=0; m[2]=0;  m[3]=0;
++	m[4]=0; m[5]=s; m[6]=0;  m[7]=0;
++	m[8]=0; m[9]=0; m[10]=s; m[11]=0;
++	m[12]=tx; m[13]=ty; m[14]=tz; m[15]=1.0f;
++}
++
++static void
++xrDiagInit(void)
++{
++	if(gXrDiag.inited) return;
++	gXrDiag.inited = true;
++
++	const char *vs =
++		"#version 300 es\n"
++		"layout(location=0) in vec3 aPos;\n"
++		"uniform mat4 uProj; uniform mat4 uView; uniform mat4 uModel;\n"
++		"void main(){ gl_Position = uProj * uView * uModel * vec4(aPos, 1.0); }\n";
++	const char *fs =
++		"#version 300 es\n"
++		"precision highp float;\n"
++		"uniform vec4 uColor; out vec4 frag;\n"
++		"void main(){ frag = uColor; }\n";
++
++	GLuint v = xrCompile(GL_VERTEX_SHADER, vs);
++	GLuint f = xrCompile(GL_FRAGMENT_SHADER, fs);
++	gXrDiag.prog = glCreateProgram();
++	glAttachShader(gXrDiag.prog, v);
++	glAttachShader(gXrDiag.prog, f);
++	glBindAttribLocation(gXrDiag.prog, 0, "aPos");
++	glLinkProgram(gXrDiag.prog);
++	glDeleteShader(v);
++	glDeleteShader(f);
++	gXrDiag.uProj  = glGetUniformLocation(gXrDiag.prog, "uProj");
++	gXrDiag.uView  = glGetUniformLocation(gXrDiag.prog, "uView");
++	gXrDiag.uModel = glGetUniformLocation(gXrDiag.prog, "uModel");
++	gXrDiag.uColor = glGetUniformLocation(gXrDiag.prog, "uColor");
++
++	// Floor grid on y=0, -5..5 m, 1 m spacing (metres == WebXR units).
++	float grid[(11 + 11) * 2 * 3];
++	int gi = 0;
++	for(int i = -5; i <= 5; i++){
++		grid[gi++] = (float)i; grid[gi++] = 0.0f; grid[gi++] = -5.0f;   // along Z
++		grid[gi++] = (float)i; grid[gi++] = 0.0f; grid[gi++] =  5.0f;
++		grid[gi++] = -5.0f; grid[gi++] = 0.0f; grid[gi++] = (float)i;   // along X
++		grid[gi++] =  5.0f; grid[gi++] = 0.0f; grid[gi++] = (float)i;
++	}
++	gXrDiag.gridVerts = gi / 3;
++	glGenVertexArrays(1, &gXrDiag.gridVao);
++	glBindVertexArray(gXrDiag.gridVao);
++	glGenBuffers(1, &gXrDiag.gridVbo);
++	glBindBuffer(GL_ARRAY_BUFFER, gXrDiag.gridVbo);
++	glBufferData(GL_ARRAY_BUFFER, gi * sizeof(float), grid, GL_STATIC_DRAW);
++	glEnableVertexAttribArray(0);
++	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), 0);
++
++	// Unit cube centered at origin (36 verts, no index buffer; culling is off).
++	static const float cube[] = {
++		-0.5f,-0.5f, 0.5f,  0.5f,-0.5f, 0.5f,  0.5f, 0.5f, 0.5f,
++		-0.5f,-0.5f, 0.5f,  0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f,
++		 0.5f,-0.5f,-0.5f, -0.5f,-0.5f,-0.5f, -0.5f, 0.5f,-0.5f,
++		 0.5f,-0.5f,-0.5f, -0.5f, 0.5f,-0.5f,  0.5f, 0.5f,-0.5f,
++		-0.5f,-0.5f,-0.5f, -0.5f,-0.5f, 0.5f, -0.5f, 0.5f, 0.5f,
++		-0.5f,-0.5f,-0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f,-0.5f,
++		 0.5f,-0.5f, 0.5f,  0.5f,-0.5f,-0.5f,  0.5f, 0.5f,-0.5f,
++		 0.5f,-0.5f, 0.5f,  0.5f, 0.5f,-0.5f,  0.5f, 0.5f, 0.5f,
++		-0.5f, 0.5f, 0.5f,  0.5f, 0.5f, 0.5f,  0.5f, 0.5f,-0.5f,
++		-0.5f, 0.5f, 0.5f,  0.5f, 0.5f,-0.5f, -0.5f, 0.5f,-0.5f,
++		-0.5f,-0.5f,-0.5f,  0.5f,-0.5f,-0.5f,  0.5f,-0.5f, 0.5f,
++		-0.5f,-0.5f,-0.5f,  0.5f,-0.5f, 0.5f, -0.5f,-0.5f, 0.5f,
++	};
++	gXrDiag.cubeVerts = 36;
++	glGenVertexArrays(1, &gXrDiag.cubeVao);
++	glBindVertexArray(gXrDiag.cubeVao);
++	glGenBuffers(1, &gXrDiag.cubeVbo);
++	glBindBuffer(GL_ARRAY_BUFFER, gXrDiag.cubeVbo);
++	glBufferData(GL_ARRAY_BUFFER, sizeof(cube), cube, GL_STATIC_DRAW);
++	glEnableVertexAttribArray(0);
++	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), 0);
++
++	glBindVertexArray(0);
++}
++
++void
++xrDrawDiagnostic(int eye, int x, int y, int w, int h, const float *proj, const float *view)
++{
++	xrDiagInit();
++
++	glViewport(x, y, w, h);
++	glScissor(x, y, w, h);
++	glEnable(GL_SCISSOR_TEST);
++
++	// Distinct per-eye tint so even a geometry-less frame still shows both
++	// scissored viewports and which eye is which.
++	if(eye == 0) glClearColor(0.06f, 0.01f, 0.01f, 1.0f);
++	else         glClearColor(0.01f, 0.01f, 0.08f, 1.0f);
++	glDepthMask(GL_TRUE);
++	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++
++	glEnable(GL_DEPTH_TEST);
++	glDepthFunc(GL_LEQUAL);
++	glDisable(GL_CULL_FACE);
++
++	glUseProgram(gXrDiag.prog);
++	glUniformMatrix4fv(gXrDiag.uProj, 1, GL_FALSE, proj);
++	glUniformMatrix4fv(gXrDiag.uView, 1, GL_FALSE, view);
++
++	float m[16];
++	xrModelMat(m, 0, 0, 0, 1.0f);
++	glUniformMatrix4fv(gXrDiag.uModel, 1, GL_FALSE, m);
++	glUniform4f(gXrDiag.uColor, 0.45f, 0.45f, 0.45f, 1.0f);
++	glBindVertexArray(gXrDiag.gridVao);
++	glDrawArrays(GL_LINES, 0, gXrDiag.gridVerts);
++
++	// Reference cubes at known metre positions: ahead, right, left, high.
++	static const float cubes[][7] = {
++		{  0.0f, 0.5f, -2.0f, 0.5f, 0.9f, 0.2f, 0.2f },
++		{  1.2f, 0.5f, -2.5f, 0.5f, 0.2f, 0.9f, 0.2f },
++		{ -1.2f, 0.5f, -2.5f, 0.5f, 0.2f, 0.5f, 0.9f },
++		{  0.0f, 1.6f, -3.5f, 0.5f, 0.9f, 0.9f, 0.2f },
++	};
++	glBindVertexArray(gXrDiag.cubeVao);
++	for(int i = 0; i < 4; i++){
++		xrModelMat(m, cubes[i][0], cubes[i][1], cubes[i][2], cubes[i][3]);
++		glUniformMatrix4fv(gXrDiag.uModel, 1, GL_FALSE, m);
++		glUniform4f(gXrDiag.uColor, cubes[i][4], cubes[i][5], cubes[i][6], 1.0f);
++		glDrawArrays(GL_TRIANGLES, 0, gXrDiag.cubeVerts);
++	}
++
++	glBindVertexArray(0);
++	glUseProgram(0);
++	glDisable(GL_SCISSOR_TEST);
++}
++
+ Device renderdevice = {
+ 	-1.0f, 1.0f,
+ 	gl3::beginUpdate,

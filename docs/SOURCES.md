@@ -26,6 +26,30 @@ from source, not vendored into our history).
 - SDL2 is **not** a submodule: the Emscripten build fetches it as a port
   (`release-2.32.10`) at configure time. Recorded here as a build-time dep.
 
+## Reference mirror (not built, not vendored)
+
+Supplied by the user on 2026-11-11 as a reference for the upstream game source.
+**Not** an engine-base change — `wasm-revc` above remains the build base. Recorded
+here only so cross-references in `ENGINE-MAP.md` have a citable, pinned upstream.
+
+| Purpose | Origin | Pinned commit |
+|---|---|---|
+| reVC (Vice City) upstream reference | https://github.com/hottabxp/re3 (branch `miami`) | `a16fcd8d6a79e433c1c6e73d540f1bbe27e14164` (2021-09-02, "Fixes from master") |
+
+- `hottabxp/re3` is a live mirror of the DMCA-removed `GTAmodding/re3`. Branch
+  `master` = GTA III (re3); branch `miami` = Vice City (reVC). It is the **native**
+  source (D3D/OpenGL); it has **no** Emscripten/WASM/WebGL web build, so it cannot
+  be a WebXR base.
+- **It is not the Rabisco private port** (plan §2 preference #1). It is a generic
+  re3/reVC mirror.
+- **Redundancy note:** our build base `engine/wasm-revc/src/` already contains the
+  complete reVC game source (all systems: `control`, `core`, `renderer`, `peds`,
+  `vehicles`, `weapons`, `save`, …) — that is what F0 compiled. So this mirror adds
+  no game systems we lack; its value is as a second, well-organized upstream for
+  diffing/understanding when needed. **Version caveat:** the `miami` tip is a 2021
+  snapshot and may diverge from the exact reVC revision `wasm-revc` ports; do not
+  assume line-for-line identity.
+
 ## Published production identity (from the report — NOT recomputed)
 
 ```

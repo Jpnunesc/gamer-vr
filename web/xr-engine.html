@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>reVC — F2 stereo spike (Experiment #1)</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #111; color: #ddd; font: 14px/1.4 system-ui, sans-serif; }
+    header { padding: 10px 14px; border-bottom: 1px solid #333; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+    button { background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.primary { background: #2d5; color: #052; border-color: #2d5; font-weight: 600; }
+    #wrap { display: flex; gap: 0; height: calc(100vh - 52px); }
+    #canvas { background: #000; flex: 1 1 auto; display: block; width: 100%; height: 100%; }
+    #log { width: 420px; flex: 0 0 420px; border-left: 1px solid #333; padding: 8px 10px; overflow: auto;
+           font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; }
+    .ok { color: #6d6; } .warn { color: #fd6; } .err { color: #f77; } .dim { color: #888; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>reVC · F2 stereo spike</h1>
+    <span id="status" class="dim">loading engine…</span>
+    <button id="selftest" disabled>Self-test (no XR)</button>
+    <button id="startgame" hidden>Resume (unpause)</button>
+    <button id="previewstereo" hidden>Preview stereo (no XR)</button>
+    <button id="entervr" class="primary" disabled>Enter VR</button>
+  </header>
+  <div id="wrap">
+    <canvas id="canvas" width="1280" height="720"></canvas>
+    <div id="log"></div>
+  </div>
+  <script type="module" src="/src/xr-engine/host.js"></script>
+</body>
+</html>

@@ -1,0 +1,377 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index a6a7a5b6..6dc79aba 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -273,8 +273,8 @@ if(EMSCRIPTEN)
+         "-sFORCE_FILESYSTEM=1"
+         "-lidbfs.js"
+         "-sEXIT_RUNTIME=0"
+-        "-sEXPORTED_RUNTIME_METHODS=FS,IDBFS,callMain,ccall,cwrap,addRunDependency,removeRunDependency"
+-        "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_ViceLogicFrame,_ViceScreenWidth,_ViceScreenHeight,_ViceRenderWidth,_ViceRenderHeight,_ViceRasterW,_ViceRasterH,_ViceHeapUsed,_ViceGameState,_ViceMenuActive,_ViceMenuScreen,_ViceForeground,_ViceIconified,_ViceMouseX,_ViceMouseY,_ViceWindowW,_ViceWindowH,_ViceFrontendStage,_ViceIdleCount,_ViceMenuFade,_ViceFirstStart,_ViceTimeMs,_ViceLogicalFrames,_ViceSetResolution,_ViceDrawnMouseX,_ViceDrawnMouseY,_ViceStartGame,_ViceSkyTop,_ViceSkyBottom,_ViceAmbient,_ViceClockHours,_ViceClockMinutes"
++        "-sEXPORTED_RUNTIME_METHODS=FS,IDBFS,callMain,ccall,cwrap,addRunDependency,removeRunDependency,HEAPF32"
++        "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_ViceLogicFrame,_ViceScreenWidth,_ViceScreenHeight,_ViceRenderWidth,_ViceRenderHeight,_ViceRasterW,_ViceRasterH,_ViceHeapUsed,_ViceGameState,_ViceMenuActive,_ViceMenuScreen,_ViceForeground,_ViceIconified,_ViceMouseX,_ViceMouseY,_ViceWindowW,_ViceWindowH,_ViceFrontendStage,_ViceIdleCount,_ViceMenuFade,_ViceFirstStart,_ViceTimeMs,_ViceLogicalFrames,_ViceSetResolution,_ViceDrawnMouseX,_ViceDrawnMouseY,_ViceStartGame,_ViceSkyTop,_ViceSkyBottom,_ViceAmbient,_ViceClockHours,_ViceClockMinutes,_xrSetMode,_xrIsActive,_xrViewCount,_xrProjPtr,_xrViewPtr,_xrRenderView,_xrDiagReady,_xrGameAdvance,_xrRenderWorld,_xrStereoEye,_xrStereoDone,_xrHeadSet,_xrStereoProjPtr,_xrStereoViewPtr,_xrStereoEyeM,_xrSetFirstPerson,_xrSetCullVW,_xrEyeInfoPtr,_xrSetTime,_xrSetMove,_xrClearMove"
+         "-lidbfs.js"
+     )
+     # REVC_WEB_DEBUG=1 turns the useless "Aborted()" into the actual assertion text.
+diff --git a/src/core/Pad.cpp b/src/core/Pad.cpp
+index 5a407c08..0d7a3e94 100644
+--- a/src/core/Pad.cpp
++++ b/src/core/Pad.cpp
+@@ -1728,6 +1728,26 @@ void CPad::AffectFromXinput(uint32 pad)
+ }
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++// F3 locomotion: the host injects a movement vector (WASD / VR stick) here; we
++// overwrite pad 0's left stick at the END of UpdatePads, AFTER the real input is
++// read, so the native player-control / physics / collision move Tommy (plan §6
++// F3: "encaminhar movimento para colisão e física nativas... mesmas ações de
++// gameplay"). Movement is camera-relative (PlayerPed uses TheCamera.Orientation);
++// our first-person camera faces the body heading, so WASD is body-relative.
++static bool  gXrMoveActive = false;
++static int16 gXrMoveX = 0, gXrMoveY = 0;
++extern "C" EMSCRIPTEN_KEEPALIVE void xrSetMove(float fwd, float strafe) {
++	gXrMoveActive = true;
++	// Full deflection is ~128 (see the joystick mapping in CapturePad). Forward
++	// maps to NEGATIVE LeftStickY (re3 keyboard convention: LeftStickY = -ly*128).
++	gXrMoveY = (int16)(-fwd * 127.0f);
++	gXrMoveX = (int16)(strafe * 127.0f);
++}
++extern "C" EMSCRIPTEN_KEEPALIVE void xrClearMove(void) { gXrMoveActive = false; gXrMoveX = gXrMoveY = 0; }
++#endif
++
+ void CPad::UpdatePads(void)
+ {
+ #ifndef GTA_PC_CONTROLS
+@@ -1789,6 +1809,15 @@ void CPad::UpdatePads(void)
+ 	NewKeyState = TempKeyState;
+ #endif
+ #endif
++
++#ifdef __EMSCRIPTEN__
++	// F3 locomotion override: after real input is read, force pad 0's walk stick
++	// from the host so the native control path walks Tommy. See the note above.
++	if(gXrMoveActive){
++		GetPad(0)->NewState.LeftStickX = gXrMoveX;
++		GetPad(0)->NewState.LeftStickY = gXrMoveY;
++	}
++#endif
+ }
+ 
+ void CPad::ProcessPCSpecificStuff(void)
+diff --git a/src/core/main.cpp b/src/core/main.cpp
+index f0ba4f8f..13b54ac5 100644
+--- a/src/core/main.cpp
++++ b/src/core/main.cpp
+@@ -40,6 +40,8 @@
+ #include "Camera.h"
+ #include "World.h"
+ #include "Ped.h"
++#include "PlayerPed.h"
++#include "PlayerInfo.h"
+ #include "Font.h"
+ #include "Pad.h"
+ #include "Hud.h"
+@@ -170,9 +172,24 @@ Error(char *fmt, ...)
+ }
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++// F2 stereo spike: read the host's diag-halt flag (JS global). See docs/STEREO-SPIKE.md.
++EM_JS(int, reVCDiagHaltMain, (), { return globalThis.__viceDiagHalt ? 1 : 0; });
++extern "C" void reVCDiagSpin(void);   // defined in skel/sdl2/sdl2.cpp; never returns
++#endif
++
+ void
+ ValidateVersion()
+ {
++#ifdef __EMSCRIPTEN__
++	// Skip the data-dependent version gate when booting with no install: it reads
++	// the game version out of models/coll/peds.col and, when that file is missing,
++	// shows "Invalid version" and spins forever in while(true). Skipping it lets the
++	// engine reach a spinnable loop (where the main-loop diag-halt then holds it
++	// before CGame::Initialise, which also needs the full install).
++	if(reVCDiagHaltMain())
++		return;
++#endif
+ 	int32 file = CFileMgr::OpenFile("models\\coll\\peds.col", "rb");
+ 	char buff[128];
+ 
+@@ -535,6 +552,16 @@ Initialise3D(void *param)
+ 	{
+ 		POP_MEMID();
+ 
++#ifdef __EMSCRIPTEN__
++		// F2 stereo spike: the RW/WebGL2 context is up now. In diag boot (no
++		// install) stop here and spin instead of initialising the game — fonts,
++		// models and collision all hard-depend on a full install and hang without
++		// it. The stereo bridge drives this live context; main() stays parked in
++		// reVCYieldFrame inside the spin. See docs/STEREO-SPIKE.md.
++		if(reVCDiagHaltMain())
++			reVCDiagSpin();   // never returns
++
++#endif
+ #ifdef DEBUGMENU
+ 		DebugMenuInit();
+ 		DebugMenuPopulate();
+@@ -1741,6 +1768,137 @@ Idle(void *arg)
+ popret:	POP_MEMID();	// MEMID_RENDER
+ }
+ 
++#ifdef __EMSCRIPTEN__
++// F3 first-person: when enabled, the world is rendered from the player's head
++// (position + eye height, body heading as the base look direction) and the player
++// model is hidden. The XR head pose rides on top via the librw view delta
++// (gl3device.cpp), so look is decoupled from the body. The game camera is left to
++// the sim; we only re-pose the RW render camera for the draw and restore the
++// player's visibility on the next sim tick. See docs/WALKING-TEST.md.
++static bool  gXrFirstPerson = false;
++static float gXrEyeHeight   = 0.5f;   // metres above the ped origin; host-tunable
++static float gXrCullVW      = 2.0f;   // cull view-window half-extent (~127° FOV); host-tunable
++static CPlayerPed *gXrHiddenPed = nil;
++static bool  gXrHiddenPedVis = true;
++
++extern "C" EMSCRIPTEN_KEEPALIVE void
++xrSetFirstPerson(int on, float eyeHeight)
++{
++	gXrFirstPerson = on != 0;
++	if(eyeHeight > 0.0f) gXrEyeHeight = eyeHeight;
++}
++
++// Live-tune the cull frustum width (half-extent at unit distance; 1.0≈90°,
++// 2.0≈127°, 3.0≈143°). Wider = fewer "holes" when the head turns, more geometry.
++extern "C" EMSCRIPTEN_KEEPALIVE void
++xrSetCullVW(float vw)
++{
++	if(vw > 0.1f) gXrCullVW = vw;
++}
++
++// Jump the in-game clock (makes dusk/night scenes legible for testing — e.g. noon
++// to see the road textured in daylight). The sim keeps advancing from here.
++extern "C" EMSCRIPTEN_KEEPALIVE void
++xrSetTime(int h, int m)
++{
++	CClock::SetGameClock((uint8)h, (uint8)m);
++}
++
++// Pose the RW render camera at the player's head, looking along the body heading.
++// Head pitch/roll/6DoF come from the XR pose (the view delta), so here the base is
++// a level camera facing the body direction. Mirrors CCamera's RW-frame posing.
++// Diagnostic readout (host reads via xrEyeInfoPtr): eye xyz, player coors xyz,
++// heading, ground-Z under the player. Lets us see WHERE the eye actually is.
++static float gXrEyeInfo[8];
++extern "C" EMSCRIPTEN_KEEPALIVE float *xrEyeInfoPtr(void) { return gXrEyeInfo; }
++
++static void
++xrPoseFirstPersonCamera(void)
++{
++	if(FindPlayerPed() == nil) return;
++	CVector coors = FindPlayerCoors();
++	CVector pos = coors;
++	pos.z += gXrEyeHeight;
++	float h = FindPlayerHeading();
++	CVector fwd(-sinf(h), cosf(h), 0.0f);   // re3 heading convention; flip if reversed
++	CVector up(0.0f, 0.0f, 1.0f);
++	CVector right = CrossProduct(up, fwd);
++	RwFrame *frame = RwCameraGetFrame(Scene.camera);
++	RwMatrix *rwm = RwFrameGetMatrix(frame);
++	*RwMatrixGetPos(rwm)   = pos;
++	*RwMatrixGetAt(rwm)    = fwd;
++	*RwMatrixGetUp(rwm)    = up;
++	*RwMatrixGetRight(rwm) = right;
++	RwMatrixUpdate(rwm);
++	RwFrameUpdateObjects(frame);
++	RwFrameOrthoNormalize(frame);
++
++	gXrEyeInfo[0] = pos.x;   gXrEyeInfo[1] = pos.y;   gXrEyeInfo[2] = pos.z;
++	gXrEyeInfo[3] = coors.x; gXrEyeInfo[4] = coors.y; gXrEyeInfo[5] = coors.z;
++	gXrEyeInfo[6] = h;
++	gXrEyeInfo[7] = CWorld::FindGroundZForCoord(coors.x, coors.y);
++}
++
++static void xrHidePlayerForRender(void) {
++	CPlayerPed *p = FindPlayerPed();
++	if(p){ gXrHiddenPed = p; gXrHiddenPedVis = p->bIsVisible; p->bIsVisible = false; }
++}
++static void xrRestorePlayerVisibility(void) {
++	if(gXrHiddenPed){ gXrHiddenPed->bIsVisible = gXrHiddenPedVis; gXrHiddenPed = nil; }
++}
++
++// F2 step 2 bridge: one sim tick + per-eye world render, driven from JS while the
++// engine's own loop is parked (xrSetMode). No 2D/HUD/present here. The librw stereo
++// override (gl3device.cpp) owns the per-eye viewport/scissor. See docs/STEREO-SPIKE.md.
++extern "C" EMSCRIPTEN_KEEPALIVE void
++xrGameAdvance(void)
++{
++	xrRestorePlayerVisibility();   // the player is only hidden during the render
++	Idle(nil);   // sim only: returns at the arg==nil check, before any render
++}
++
++extern "C" EMSCRIPTEN_KEEPALIVE void
++xrRenderWorld(int buildList)
++{
++	PUSH_MEMID(MEMID_RENDER);
++	if(gXrFirstPerson) xrPoseFirstPersonCamera();   // re-pose every eye (cheap)
++	if(buildList){
++		RwV2d savedVw;
++		bool widened = false;
++		if(gXrFirstPerson){
++			xrHidePlayerForRender();  // hide before the list is built
++			// Widen the cull frustum. ScanWorld culls to the game camera's view
++			// window, but we render a wider per-eye FOV and the head turns via the
++			// XR view delta — so the normal (narrow) frustum culls the periphery and
++			// we "see between the walls". The verbatim render ignores this view
++			// window (it uses the staged projection), so widening ONLY adds geometry
++			// to the render list — it can never remove any. ~127° covers the eye FOV
++			// plus a generous head-turn margin.
++			savedVw = *RwCameraGetViewWindow(Scene.camera);
++			RwV2d wide; wide.x = gXrCullVW; wide.y = gXrCullVW;
++			RwCameraSetViewWindow(Scene.camera, &wide);
++			widened = true;
++		}
++		CRenderer::ConstructRenderList();
++		CRenderer::PreRender();
++		if(widened) RwCameraSetViewWindow(Scene.camera, &savedVw);
++	}
++	RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void *)FALSE);
++	RwCameraSetFarClipPlane(Scene.camera, CTimeCycle::GetFarClip());
++	RwCameraSetFogDistance(Scene.camera, CTimeCycle::GetFogStart());
++	if(!DoRWStuffStartOfFrame_Horizon(CTimeCycle::GetSkyTopRed(), CTimeCycle::GetSkyTopGreen(), CTimeCycle::GetSkyTopBlue(),
++			CTimeCycle::GetSkyBottomRed(), CTimeCycle::GetSkyBottomGreen(), CTimeCycle::GetSkyBottomBlue(), 255)){
++		POP_MEMID();
++		return;
++	}
++	DefinedState();
++	RenderScene();
++	RenderEffects();
++	RwCameraEndUpdate(Scene.camera);   // close the camera; NO ShowRaster (no present)
++	POP_MEMID();
++}
++#endif
++
+ #ifdef __EMSCRIPTEN__
+ int gViceFrontendStage = 0;
+ extern "C" EMSCRIPTEN_KEEPALIVE int ViceFrontendStage(void) { return gViceFrontendStage; }
+diff --git a/src/skel/sdl2/sdl2.cpp b/src/skel/sdl2/sdl2.cpp
+index 57ea51fd..5c8073a8 100644
+--- a/src/skel/sdl2/sdl2.cpp
++++ b/src/skel/sdl2/sdl2.cpp
+@@ -32,6 +32,15 @@ extern "C" EMSCRIPTEN_KEEPALIVE int ViceLogicFrame(void) { return reVCFrames; }
+ 
+ EM_ASYNC_JS(void, reVCYieldFrame, (), {
+     var g = globalThis;
++    // F2 stereo spike: during an immersive XR session the JS XR rAF loop owns the
++    // engine and drives it through the xr* exports. Park the engine's own loop here
++    // (do not advance Idle; do not resume on window.rAF or the worker tick — either
++    // would fight the XR loop for the framebuffer) until xrSetMode(0) resolves
++    // __viceXrUnpark. See docs/STEREO-SPIKE.md.
++    if (g.__viceXrActive) {
++        await new Promise(function(resolve){ g.__viceXrUnpark = resolve; });
++        return;
++    }
+     if (!g.__reVCTick) {
+         // A worker's timers are exempt from the throttling a browser applies to a background
+         // tab, where requestAnimationFrame stops firing altogether. Without this the game does
+@@ -55,6 +64,86 @@ EM_ASYNC_JS(void, reVCYieldFrame, (), {
+     });
+ });
+ #endif
++
++#ifdef __EMSCRIPTEN__
++// ---------------------------------------------------------------------------
++// F2 stereo spike (Experiment #1): XR loop-ownership + diagnostic draw bridge.
++// NEW contracts (plan §4), not production exports. The JS XR rAF loop parks this
++// module's own game loop (see __viceXrActive in reVCYieldFrame above) and calls
++// the xr* exports below from inside XRSession.requestAnimationFrame, so every GL
++// draw lands in the opaque XRWebGLLayer framebuffer while it is bound and valid.
++// See docs/STEREO-SPIKE.md.
++// ---------------------------------------------------------------------------
++namespace rw { namespace gl3 {
++	void xrDrawDiagnostic(int eye, int x, int y, int w, int h, const float *proj, const float *view);
++	void xrStereoSet(float eyeOff, int x, int y, int w, int h);
++	void xrStereoSetM(const float *proj, const float *viewDelta, int x, int y, int w, int h);
++	void xrStereoOff(void);
++	void xrHeadSet(float yaw, float pitch);
++}}
++
++static volatile int gViceXrActive = 0;
++static volatile int gViceDiagReady = 0;   // 1 once the diag-boot spin is reached (GL up, game not loaded)
++// Per-eye matrices written by JS via HEAPF32 through the pointers below. The heap
++// never grows (ALLOW_MEMORY_GROWTH=0), so these addresses stay valid.
++static float gXrProj[16];
++static float gXrView[16];
++static int   gXrViewCount = 0;   // views drawn since entering XR (the "N" of 1-update/N-views)
++// F2 obstacle #4: per-eye REAL matrices staged by JS (converted from WebXR; see
++// web/src/xr-engine/xr-rw.js). Written through the pointers below, consumed by
++// xrStereoEyeM. The heap never grows, so these addresses stay valid.
++static float gXrStereoProj[16];  // P_rw (converted WebXR projection)
++static float gXrStereoView[16];  // Δ   (converted per-eye view delta)
++
++EM_JS(void, reVCXrSetModeJS, (int enabled), {
++	globalThis.__viceXrActive = enabled;
++	if (!enabled && globalThis.__viceXrUnpark) {
++		var resume = globalThis.__viceXrUnpark;
++		globalThis.__viceXrUnpark = null;
++		resume();              // let the parked desktop loop resume, exactly once
++	}
++});
++
++// F2 spike: when set by the host before boot, hold the loop before it loads the
++// game (see the main loop). Read every frame; a JS global, so no export needed.
++EM_JS(int, reVCDiagHaltJS, (), { return globalThis.__viceDiagHalt ? 1 : 0; });
++
++extern "C" {
++EMSCRIPTEN_KEEPALIVE void   xrSetMode(int enabled) { gViceXrActive = enabled; if(enabled) gXrViewCount = 0; reVCXrSetModeJS(enabled); }
++EMSCRIPTEN_KEEPALIVE int    xrIsActive(void)       { return gViceXrActive; }
++EMSCRIPTEN_KEEPALIVE int    xrViewCount(void)      { return gXrViewCount; }
++EMSCRIPTEN_KEEPALIVE float *xrProjPtr(void)        { return gXrProj; }
++EMSCRIPTEN_KEEPALIVE float *xrViewPtr(void)        { return gXrView; }
++EMSCRIPTEN_KEEPALIVE void   xrRenderView(int eye, int x, int y, int w, int h) {
++	rw::gl3::xrDrawDiagnostic(eye, x, y, w, h, gXrProj, gXrView);
++	gXrViewCount++;
++}
++EMSCRIPTEN_KEEPALIVE int    xrDiagReady(void)      { return gViceDiagReady; }
++// F2 step 2: per-eye stereo override. eye 0 = left (-ipd/2), eye 1 = right (+ipd/2);
++// x,y,w,h is this eye's viewport in the host-bound framebuffer.
++EMSCRIPTEN_KEEPALIVE void   xrStereoEye(int eye, float ipd, int x, int y, int w, int h) {
++	rw::gl3::xrStereoSet((eye == 0 ? -0.5f : 0.5f) * ipd, x, y, w, h);
++}
++// Real-matrix stereo (obstacle #4): JS has already written the converted P_rw
++// into xrStereoProjPtr() and Δ into xrStereoViewPtr() for THIS eye; this hands
++// them to librw's verbatim override and sets the eye viewport.
++EMSCRIPTEN_KEEPALIVE float *xrStereoProjPtr(void) { return gXrStereoProj; }
++EMSCRIPTEN_KEEPALIVE float *xrStereoViewPtr(void) { return gXrStereoView; }
++EMSCRIPTEN_KEEPALIVE void   xrStereoEyeM(int x, int y, int w, int h) {
++	rw::gl3::xrStereoSetM(gXrStereoProj, gXrStereoView, x, y, w, h);
++}
++EMSCRIPTEN_KEEPALIVE void   xrStereoDone(void)     { rw::gl3::xrStereoOff(); }
++// Head look (radians), from the WebXR head pose. Applied to both eyes' views.
++EMSCRIPTEN_KEEPALIVE void   xrHeadSet(float yaw, float pitch) { rw::gl3::xrHeadSet(yaw, pitch); }
++
++// Diag boot: the RW/WebGL2 device is up but the game is NOT initialised. Spin a
++// yield loop so the page stays alive and the stereo bridge can drive the live
++// context with no data. Called from Initialise3D (main.cpp) right after the RW
++// device comes up. Never returns; parks inside reVCYieldFrame when XR takes over.
++void reVCDiagSpin(void) { gViceDiagReady = 1; for(;;){ reVCFrames++; reVCYieldFrame(); } }
++} // extern "C"
++#endif
++
+ #include <errno.h>
+ #include <locale.h>
+ #include <signal.h>
+@@ -1990,6 +2079,14 @@ main(int argc, char *argv[])
+             // invoke_* JS frame above us, which Asyncify cannot unwind through.
+             reVCFrames++;
+             reVCYieldFrame();
++            // F2 stereo spike (Experiment #1): hold the engine in a live, spinnable
++            // state — GL context up, loop yielding each frame — WITHOUT loading the
++            // game, so the stereo bridge runs with no commercial data. Skips the
++            // game-state machine entirely (never reaches CGame::Initialise, which
++            // hangs/aborts with no data). When XR is active the loop is already
++            // parked inside reVCYieldFrame above, so this is not reached. The host
++            // sets __viceDiagHalt before boot. See docs/STEREO-SPIKE.md.
++            if(reVCDiagHaltJS()) continue;
+ #endif
+             inputEventHandler();
+ 

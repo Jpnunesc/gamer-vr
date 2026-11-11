@@ -19,6 +19,9 @@ build/
 dist/
 *.wasm
 *.wasm.map
+# Exception: the served engine binary IS shipped (reVC.js is useless without it,
+# and the confirmed F2/F3 build is not cheaply reproducible — see engine-patches/).
+!web/reVC.wasm
 web/public/engine/   # emitted engine glue/wasm copied in for serving
 
 # --- Node / tooling ---
