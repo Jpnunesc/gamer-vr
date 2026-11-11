@@ -14,6 +14,7 @@
 import { XRSessionManager } from '../xr/session.js';
 import { identity, invert, perspective, translation } from '../gl/math.js';
 import { rwProjFromGl, rwViewDeltaFromGl, syntheticWorldToEye } from './xr-rw.js';
+import { keysToMove, stickToMove, mergeMove, pickThumbstick } from './locomotion.js';
 
 // F2 obstacle #4: by default feed the REAL per-eye WebXR projection + view
 // (converted to RW convention in xr-rw.js, proven in tests/xr-rw.test.mjs).
@@ -37,22 +38,25 @@ function applyFirstPerson(on) {
   if (!on && module._xrClearMove) module._xrClearMove();
 }
 
-// F3 locomotion: WASD → a movement vector pushed into the native pad each tick
+// F3 locomotion: WASD (flat screen) and the VR controller's left thumbstick (in a
+// session) both resolve to a movement vector pushed into the native pad each tick
 // (xrSetMove, consumed inside xrGameAdvance's CPad::UpdatePads). Camera-relative,
-// and our FP camera faces the body, so it's body-relative. Tracked globally so it
-// works in both Preview and Enter VR; only sent while first-person is on.
+// and our FP camera faces the body, so it's body-relative. The input→vector mapping
+// (signs, deadzone, merge) lives in ./locomotion.js and is unit-tested. Tracked
+// globally so it works in both Preview and Enter VR; only sent while first-person is on.
 const moveKeys = new Set();
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (k === 'w' || k === 'a' || k === 's' || k === 'd') moveKeys.add(k);
 });
 window.addEventListener('keyup', (e) => { moveKeys.delete(e.key.toLowerCase()); });
-function sendMove() {
+// stickAxes: an optional xr-standard gamepad axes array (from the XR path); absent
+// in the flat-screen preview, where only the keyboard drives movement.
+function sendMove(stickAxes) {
   if (!FIRST_PERSON || !module || !module._xrSetMove) return;
-  let fwd = (moveKeys.has('w') ? 1 : 0) - (moveKeys.has('s') ? 1 : 0);
-  let strafe = (moveKeys.has('d') ? 1 : 0) - (moveKeys.has('a') ? 1 : 0);
-  const mag = Math.hypot(fwd, strafe);
-  if (mag > 1) { fwd /= mag; strafe /= mag; }
+  const keyVec = keysToMove((k) => moveKeys.has(k));
+  const stickVec = stickToMove(stickAxes);
+  const { fwd, strafe } = mergeMove(keyVec, stickVec);
   module._xrSetMove(fwd, strafe);
 }
 
@@ -269,7 +273,8 @@ let xrEye = 0;
 const HEAD_YAW_SIGN = 1, HEAD_PITCH_SIGN = 1;
 const worldHooks = {
   update: (frame, refSpace, pose) => {
-    sendMove();                                     // WASD → native pad (F3 locomotion)
+    const stick = pickThumbstick(frame && frame.session && frame.session.inputSources);
+    sendMove(stick);                                // WASD + VR left thumbstick → native pad (F3 locomotion)
     module._xrGameAdvance();                        // ONE sim tick per frame
     if (!USE_CRUDE) return;                         // real path: head pose is in the per-eye view
     const q = pose && pose.transform && pose.transform.orientation;

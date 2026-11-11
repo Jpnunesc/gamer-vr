@@ -112,6 +112,36 @@ preview now defaults to **MONO** (one full-canvas first-person image; press `m` 
 stereo split) so the world + locomotion are easy to see/test without a headset. The
 stereo/Enter-VR path is unchanged and is the real target.
 
+## Increment 3 — VR controller thumbstick locomotion — 2026-11-11 (item 2, VR sticks)
+
+**What it does.** Inside an immersive session, the **left controller's thumbstick**
+now walks Tommy through the exact same native path as WASD — no new movement code,
+no engine rebuild. It reuses the confirmed `xrSetMove` export; only the host changed.
+
+**Mechanism (host only).** The input→vector mapping moved into a pure, unit-tested
+module `web/src/xr-engine/locomotion.js`:
+- `keysToMove(has)` — WASD → `{fwd, strafe}` (diagonals normalised); replaces the old
+  inline logic in `host.js`.
+- `stickToMove(axes)` — xr-standard gamepad `axes[2]/axes[3]` (thumbstick X/Y) →
+  `{fwd, strafe}`, with a radial deadzone (0.15) and a rescale so speed ramps from 0 at
+  the deadzone edge. Up = forward, right = strafe right (signs matched to `xrSetMove`).
+- `mergeMove(key, stick)` — stick wins while deflected, else keyboard (one source at a
+  time, like F1's input arbitration).
+- `pickThumbstick(inputSources)` — prefers the **left** controller, else any source with
+  a 4-axis gamepad.
+
+In `worldHooks.update` the host reads `frame.session.inputSources`, picks the thumbstick,
+and passes its axes to `sendMove(axes)`; the flat-screen preview still calls `sendMove()`
+with no stick (keyboard only), so that confirmed path is byte-for-byte unchanged.
+
+**State.** ⏳ **Code complete, `pending hardware`.** The mapping is proven by
+`tests/locomotion.test.mjs` (12 invariants: signs, deadzone, ramp, clamp, merge,
+left-hand preference — all green via `npm test`), but the actual stick-in-session walk is
+only exercised in the emulator/headset, which is still pending. Right-stick **snap-turn**
+is intentionally not here: with a decoupled head + body-relative strafe, turning the body
+needs an engine-side heading input (a bridge export + rebuild), so it's deferred with
+sprint/jump to the next engine build. No regression risk to the confirmed WASD/FP path.
+
 ## How to test (increment 1)
 1. `node scripts/serve.mjs`; open `http://localhost:8080/xr-engine.html?data=1&fp=1`.
 2. Reach gameplay (New Game → control Tommy, state 9).
