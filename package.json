@@ -2,7 +2,7 @@
   "name": "vr-vice-city",
   "version": "0.0.1",
   "private": true,
-  "description": "Experimental first-person WebXR adaptation of the Vice City web port. See docs/ and the planning repo (../vr-vice-city-plano).",
+  "description": "Experimental first-person WebXR adaptation of the Vice City web port. See docs/ and the plan in plano/.",
   "type": "module",
   "scripts": {
     "serve": "node scripts/serve.mjs",

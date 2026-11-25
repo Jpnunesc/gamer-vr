@@ -5,8 +5,8 @@ Experimental first-person **WebXR** adaptation of the Vice City web port
 Desktop mode is preserved for development and regression.
 
 > This is an implementation workspace. The engineering plan and the evidence it
-> is based on live in the sibling planning repo:
-> `../vr-vice-city-plano` (`ANALISE-TECNICA.md`, `PLANO-EXECUCAO.md`).
+> is based on live in the `plano/` folder of this repo:
+> `plano/` (`ANALISE-TECNICA.md`, `PLANO-EXECUCAO.md`, `PROMPT-PARA-CLAUDE.md`).
 > Read those first. Facts, hypotheses and proposed decisions are kept distinct
 > there and in `docs/`.
 
